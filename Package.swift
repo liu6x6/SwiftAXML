@@ -13,7 +13,10 @@ let package = Package(
         ),
         .testTarget(
             name: "SwiftAXMLTests",
-            dependencies: ["SwiftAXML"]
+            dependencies: ["SwiftAXML"],
+            resources: [
+                .copy("Data")
+            ]
         ),
     ],
     swiftLanguageModes: [.v6]
