@@ -1,14 +1,14 @@
 
 import Foundation
 
-class ARSCPrinter {
+public class ARSCPrinter {
     private var parser: ARSCParser
 
-    init(data: Data) throws {
+    public init(data: Data) throws {
         self.parser = try ARSCParser(data: data)
     }
 
-    func getXML(packageName: String, locale: String = "") -> String {
+    public func getXML(packageName: String, locale: String = "\\x00\\x00") -> String {
         return parser.getPublicResources(packageName: packageName, locale: locale)
     }
 }

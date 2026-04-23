@@ -13,10 +13,10 @@ $ cd SwiftAXML
 $ swift build -c release
 
 # Parse AXML back into a readable XML string:
-$ swift run SwiftAXML axml /path/to/AndroidManifest.xml
+$ swift run swift-axml axml /path/to/AndroidManifest.xml
 
 # Quickly extract and print high-level App Info & Permissions:
-$ swift run SwiftAXML info /path/to/AndroidManifest.xml
+$ swift run swift-axml info /path/to/AndroidManifest.xml
 ```
 
 ## API Usage

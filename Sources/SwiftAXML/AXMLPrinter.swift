@@ -1,15 +1,15 @@
 
 import Foundation
 
-class AXMLPrinter {
+public class AXMLPrinter {
     private var parser: AXMLParser
     private var indent = 0
 
-    init(data: Data) throws {
+    public init(data: Data) throws {
         self.parser = try AXMLParser(data: data)
     }
 
-    func getXML() throws -> String {
+    public func getXML() throws -> String {
         var xml = "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
         var event = try parser.next()
         var tagStack: [(prefix: String?, name: String)] = []
