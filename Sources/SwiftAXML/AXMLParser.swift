@@ -49,6 +49,7 @@ class AXMLParser {
     var event: Event = .startDocument
     var name: String?
     var namespace: String?
+    var namespaceUriPrefixMap: [String: String] = [:]
     var attributes: [Attribute] = []
     var text: String?
 
@@ -88,7 +89,7 @@ class AXMLParser {
 
         var headerCursor = cursor
         let header = try AXMLParser.parseHeader(cursor: &headerCursor, data: data)
-        let chunkContentStart = cursor + 8
+        let chunkContentStart = cursor + Int(header.headerSize)
 
         switch header.type {
         case .RES_XML_START_NAMESPACE_TYPE:
@@ -97,6 +98,7 @@ class AXMLParser {
             let prefix = stringBlock.getString(at: prefixIndex) ?? ""
             let uri = stringBlock.getString(at: uriIndex) ?? ""
             namespaces.append((prefix, uri))
+            namespaceUriPrefixMap[uri] = prefix
             cursor += Int(header.size)
             return try next()
 
@@ -107,14 +109,15 @@ class AXMLParser {
 
         case .RES_XML_START_ELEMENT_TYPE:
             event = .startTag
-            let nsIndex = Int(data.withUnsafeBytes { $0.load(fromByteOffset: chunkContentStart + 8, as: UInt32.self).littleEndian })
-            let nameIndex = Int(data.withUnsafeBytes { $0.load(fromByteOffset: chunkContentStart + 12, as: UInt32.self).littleEndian })
-            let attributeStart = Int(data.withUnsafeBytes { $0.load(fromByteOffset: chunkContentStart + 16, as: UInt16.self).littleEndian })
-            let attributeSize = Int(data.withUnsafeBytes { $0.load(fromByteOffset: chunkContentStart + 18, as: UInt16.self).littleEndian })
-            let attributeCount = Int(data.withUnsafeBytes { $0.load(fromByteOffset: chunkContentStart + 20, as: UInt16.self).littleEndian })
+            let nsIndex = Int(data.withUnsafeBytes { $0.load(fromByteOffset: chunkContentStart, as: UInt32.self).littleEndian })
+            let nameIndex = Int(data.withUnsafeBytes { $0.load(fromByteOffset: chunkContentStart + 4, as: UInt32.self).littleEndian })
+            let attributeStart = Int(data.withUnsafeBytes { $0.load(fromByteOffset: chunkContentStart + 8, as: UInt16.self).littleEndian })
+            let attributeSize = Int(data.withUnsafeBytes { $0.load(fromByteOffset: chunkContentStart + 10, as: UInt16.self).littleEndian })
+            let attributeCountRaw = data.withUnsafeBytes { $0.load(fromByteOffset: chunkContentStart + 12, as: UInt32.self).littleEndian }
+            let attributeCount = Int(attributeCountRaw & 0xFFFF)
 
-            self.namespace = (nsIndex != -1) ? stringBlock.getString(at: nsIndex) : nil
-            self.name = stringBlock.getString(at: nameIndex)
+            self.namespace = (nsIndex == 0xFFFFFFFF) ? nil : stringBlock.getString(at: nsIndex)
+            self.name = (nameIndex == 0xFFFFFFFF) ? nil : stringBlock.getString(at: nameIndex)
 
             var attributesStart = chunkContentStart + attributeStart
             self.attributes = []
@@ -125,11 +128,43 @@ class AXMLParser {
                 let attrValueType = Int(data.withUnsafeBytes { $0.load(fromByteOffset: attributesStart + 12, as: UInt32.self).littleEndian } >> 24)
                 let attrValueData = Int(data.withUnsafeBytes { $0.load(fromByteOffset: attributesStart + 16, as: UInt32.self).littleEndian })
 
-                let attrNs = (attrNsIndex != -1) ? stringBlock.getString(at: attrNsIndex) : nil
-                let attrName = stringBlock.getString(at: attrNameIndex) ?? ""
-                let attrValue = (attrValueStringIndex != -1) ? stringBlock.getString(at: attrValueStringIndex) : formatValue(type: attrValueType, data: attrValueData)
+                let attrNs = (attrNsIndex == 0xFFFFFFFF) ? nil : stringBlock.getString(at: attrNsIndex)
+                
+                var attrName = (attrNameIndex == 0xFFFFFFFF) ? nil : stringBlock.getString(at: attrNameIndex)
+                var resId: UInt32? = nil
+                
+                // Use resourceMap to look up system attribute names
+                if attrNameIndex >= 0 && attrNameIndex != 0xFFFFFFFF && attrNameIndex < self.resourceMap.count {
+                    resId = self.resourceMap[attrNameIndex]
+                    if let resId = resId, let sysName = SystemResources.attributes[resId] {
+                        let sysNameAdjusted = sysName.replacingOccurrences(of: "_", with: ":")
+                        // Prefer system resource name if string block is empty or missing
+                        if attrName == nil || attrName?.isEmpty == true || attrName == ":" {
+                            attrName = sysNameAdjusted
+                        } else if attrName != sysNameAdjusted {
+                            // If StringBlock name doesn't match SystemResource name, system resource name is usually correct due to packer tools
+                            attrName = sysNameAdjusted
+                        }
+                    }
+                }
+                
+                if attrName == nil || attrName == ":" {
+                    if let resId = resId {
+                        attrName = String(format: "UNKNOWN_SYSTEM_ATTRIBUTE_%08x", resId)
+                    } else {
+                        attrName = ""
+                    }
+                }
 
-                self.attributes.append(Attribute(namespace: attrNs, name: attrName, value: attrValue ?? ""))
+                // If attribute value type is TYPE_STRING, we must lookup the string index, not data
+                let attrValue: String?
+                if attrValueType == 0x03 /* TYPE_STRING */ {
+                    attrValue = (attrValueStringIndex == 0xFFFFFFFF) ? "" : stringBlock.getString(at: attrValueStringIndex)
+                } else {
+                    attrValue = formatValue(type: attrValueType, data: attrValueData)
+                }
+
+                self.attributes.append(Attribute(namespace: attrNs, name: attrName ?? "", value: attrValue ?? ""))
                 attributesStart += attributeSize
             }
             cursor += Int(header.size)
@@ -137,10 +172,10 @@ class AXMLParser {
 
         case .RES_XML_END_ELEMENT_TYPE:
             event = .endTag
-            let nsIndex = Int(data.withUnsafeBytes { $0.load(fromByteOffset: chunkContentStart + 4, as: UInt32.self).littleEndian })
-            let nameIndex = Int(data.withUnsafeBytes { $0.load(fromByteOffset: chunkContentStart + 8, as: UInt32.self).littleEndian })
-            self.namespace = (nsIndex != -1) ? stringBlock.getString(at: nsIndex) : nil
-            self.name = stringBlock.getString(at: nameIndex)
+            let nsIndex = Int(data.withUnsafeBytes { $0.load(fromByteOffset: chunkContentStart, as: UInt32.self).littleEndian })
+            let nameIndex = Int(data.withUnsafeBytes { $0.load(fromByteOffset: chunkContentStart + 4, as: UInt32.self).littleEndian })
+            self.namespace = (nsIndex == 0xFFFFFFFF) ? nil : stringBlock.getString(at: nsIndex)
+            self.name = (nameIndex == 0xFFFFFFFF) ? nil : stringBlock.getString(at: nameIndex)
             cursor += Int(header.size)
             return .endTag
 
