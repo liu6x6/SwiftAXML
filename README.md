@@ -75,3 +75,10 @@ let xmlString = try printer.getXML()
 
 print(xmlString) // <?xml version="1.0" encoding="utf-8"?>...
 ```
+
+## reference
+https://android.googlesource.com/platform/frameworks/base/+/master/libs/androidfw/include/androidfw/ResourceTypes.h
+https://juejin.cn/post/7005944481455439903
+https://github.com/senswrong/AndroidBinaryXml
+https://android.googlesource.com/platform/frameworks/base/+/refs/heads/main/tools/aapt2/ApkInfo.proto
+https://github.com/androguard/axml
