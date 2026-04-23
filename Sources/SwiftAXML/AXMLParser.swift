@@ -1,28 +1,30 @@
 
 import Foundation
 
-enum ChunkType: UInt16 {
-    case RES_NULL_TYPE = 0x0000
-    case RES_STRING_POOL_TYPE = 0x0001
-    case RES_TABLE_TYPE = 0x0002
-    case RES_XML_TYPE = 0x0003
+struct ChunkType: Equatable {
+    let rawValue: UInt16
+    
+    static let RES_NULL_TYPE = ChunkType(rawValue: 0x0000)
+    static let RES_STRING_POOL_TYPE = ChunkType(rawValue: 0x0001)
+    static let RES_TABLE_TYPE = ChunkType(rawValue: 0x0002)
+    static let RES_XML_TYPE = ChunkType(rawValue: 0x0003)
 
     // Chunk types in RES_XML_TYPE
-    case RES_XML_START_NAMESPACE_TYPE = 0x0100
-    case RES_XML_END_NAMESPACE_TYPE = 0x0101
-    case RES_XML_START_ELEMENT_TYPE = 0x0102
-    case RES_XML_END_ELEMENT_TYPE = 0x0103
-    case RES_XML_CDATA_TYPE = 0x0104
-    case RES_XML_LAST_CHUNK_TYPE = 0x017f
+    static let RES_XML_START_NAMESPACE_TYPE = ChunkType(rawValue: 0x0100)
+    static let RES_XML_END_NAMESPACE_TYPE = ChunkType(rawValue: 0x0101)
+    static let RES_XML_START_ELEMENT_TYPE = ChunkType(rawValue: 0x0102)
+    static let RES_XML_END_ELEMENT_TYPE = ChunkType(rawValue: 0x0103)
+    static let RES_XML_CDATA_TYPE = ChunkType(rawValue: 0x0104)
+    static let RES_XML_LAST_CHUNK_TYPE = ChunkType(rawValue: 0x017f)
     // This contains a uint32_t array mapping strings in the string
     // pool back to resource identifiers.  It is optional.
-    case RES_XML_RESOURCE_MAP_TYPE = 0x0180
+    static let RES_XML_RESOURCE_MAP_TYPE = ChunkType(rawValue: 0x0180)
 
     // Chunk types in RES_TABLE_TYPE
-    case RES_TABLE_PACKAGE_TYPE = 0x0200
-    case RES_TABLE_TYPE_TYPE = 0x0201
-    case RES_TABLE_TYPE_SPEC_TYPE = 0x0202
-    case RES_TABLE_LIBRARY_TYPE = 0x0203
+    static let RES_TABLE_PACKAGE_TYPE = ChunkType(rawValue: 0x0200)
+    static let RES_TABLE_TYPE_TYPE = ChunkType(rawValue: 0x0201)
+    static let RES_TABLE_TYPE_SPEC_TYPE = ChunkType(rawValue: 0x0202)
+    static let RES_TABLE_LIBRARY_TYPE = ChunkType(rawValue: 0x0203)
 }
 
 enum Event {
@@ -198,9 +200,7 @@ class AXMLParser {
         let headerSize = data.withUnsafeBytes { $0.load(fromByteOffset: cursor + 2, as: UInt16.self).littleEndian }
         let size = data.withUnsafeBytes { $0.load(fromByteOffset: cursor + 4, as: UInt32.self).littleEndian }
 
-        guard let type = ChunkType(rawValue: typeValue) else {
-            throw AXMLParserError.unknownChunkType(typeValue)
-        }
+        let type = ChunkType(rawValue: typeValue)
 
         if let expected = expected, expected != type {
             throw AXMLParserError.unexpectedChunkType(expected: expected, actual: type)

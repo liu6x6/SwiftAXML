@@ -21,7 +21,13 @@ public class AXMLManifestParser {
     public var receivers: [[String: String]] = []
     public var providers: [[String: String]] = []
 
-    public init(data: Data) throws {
+    private var arscParser: ARSCParser?
+
+    public init(data: Data, arscData: Data? = nil) throws {
+        if let arscData = arscData {
+            self.arscParser = try ARSCParser(data: arscData)
+        }
+        
         let parser = try AXMLParser(data: data)
         var event = try parser.next()
 
@@ -31,7 +37,7 @@ public class AXMLManifestParser {
                 
                 var attrs: [String: String] = [:]
                 for attr in parser.attributes {
-                    attrs[attr.name] = attr.value
+                    attrs[attr.name] = resolveValue(attr.value)
                 }
 
                 switch tagName {
@@ -70,6 +76,27 @@ public class AXMLManifestParser {
             }
             event = try parser.next()
         }
+    }
+
+    private func resolveValue(_ value: String) -> String {
+        guard value.hasPrefix("@"), let arscParser = arscParser else {
+            return value
+        }
+        // Extract hex string, removing the '@'
+        let hexString = String(value.dropFirst())
+        guard let resId = Int(hexString, radix: 16) else {
+            return value
+        }
+        
+        if let resolvedString = arscParser.resolve(resourceId: resId) {
+            // It could be another reference!
+            if resolvedString.hasPrefix("@") && resolvedString != value {
+                return resolveValue(resolvedString)
+            }
+            return resolvedString
+        }
+        
+        return value
     }
 
     public func getAppInfo() -> [String: Any] {

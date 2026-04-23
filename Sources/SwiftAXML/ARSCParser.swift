@@ -1,14 +1,22 @@
 
 import Foundation
 
-class ARSCParser {
+public class ARSCParser {
     private var data: Data
     private var mainStringPool: StringBlock?
     private var packages: [String: Package] = [:]
+    
+    // Flat map of all resources for fast lookup by ID
+    public var resourceMap: [Int: String] = [:]
 
-    init(data: Data) throws {
+    public init(data: Data) throws {
         self.data = data
-        try parse()
+        do {
+            try parse()
+        } catch {
+            // Ignore top level parse failures so that whatever was loaded into resourceMap
+            // can still be used, and so the caller doesn't crash when passing arscData
+        }
     }
 
     private func parse() throws {
@@ -28,14 +36,36 @@ class ARSCParser {
 
         for _ in 0..<packageCount {
             if cursor >= data.count { break }
-            let package = try Package(data: data, offset: &cursor, mainStringPool: mainStringPool)
-            packages[package.name] = package
+            do {
+                let package = try Package(data: data, offset: &cursor, mainStringPool: mainStringPool)
+                packages[package.name] = package
+                
+                // Populate the fast lookup map
+                for (_, type) in package.types {
+                    for (locale, values) in type.entries {
+                        for value in values {
+                            if resourceMap[value.resId] == nil || locale == "" {
+                                resourceMap[value.resId] = value.value
+                            }
+                        }
+                    }
+                }
+            } catch {
+                // Stop parsing packages but don't blow up the entire ARSC initialization 
+                // if there are malformed packages. Often only the first package contains 
+                // the metadata we care about.
+                break
+            }
         }
     }
 
-    func getPublicResources(packageName: String, locale: String = "") -> String {
+    public func getPublicResources(packageName: String, locale: String = "") -> String {
         guard let package = packages[packageName] else { return "" }
         return package.getPublicResources(locale: locale)
+    }
+    
+    public func resolve(resourceId: Int) -> String? {
+        return resourceMap[resourceId]
     }
 
     static func parseHeader(at cursor: inout Int, data: Data, expected: ChunkType? = nil) throws -> (type: ChunkType, headerSize: UInt16, size: UInt32) {
@@ -43,11 +73,12 @@ class ARSCParser {
         let headerSize = data.withUnsafeBytes { $0.load(fromByteOffset: cursor + 2, as: UInt16.self).littleEndian }
         let size = data.withUnsafeBytes { $0.load(fromByteOffset: cursor + 4, as: UInt32.self).littleEndian }
 
-        guard let type = ChunkType(rawValue: typeValue) else {
-            throw ARSCParserError.unknownChunkType(typeValue)
-        }
+        let type = ChunkType(rawValue: typeValue)
 
         if let expected = expected, expected != type {
+            // Instead of throwing immediately, we just log/return the chunk we found. 
+            // In ARSC we might want to be resilient against obfuscated formats.
+            // But if it's explicitly expected and doesn't match, we still throw to abort that branch.
             throw ARSCParserError.unexpectedChunkType(expected: expected, actual: type)
         }
 
@@ -55,11 +86,12 @@ class ARSCParser {
     }
 }
 
-class Package {
-    let name: String
+public class Package {
+    public let packageId: Int
+    public let name: String
     private var typeStringPool: StringBlock
     private var keyStringPool: StringBlock
-    private var types: [String: ResourceType] = [:]
+    public var types: [String: ResourceType] = [:]
 
     init(data: Data, offset: inout Int, mainStringPool: StringBlock?) throws {
         let packageHeaderStart = offset
@@ -67,7 +99,7 @@ class Package {
         let packageHeader = try ARSCParser.parseHeader(at: &packageCursor, data: data, expected: .RES_TABLE_PACKAGE_TYPE)
         packageCursor = packageHeaderStart + Int(packageHeader.headerSize)
         
-        _ = Int(data.withUnsafeBytes { $0.load(fromByteOffset: packageCursor, as: UInt32.self).littleEndian })
+        self.packageId = Int(data.withUnsafeBytes { $0.load(fromByteOffset: packageCursor, as: UInt32.self).littleEndian })
         packageCursor += 4
         
         let nameData = data.subdata(in: packageCursor..<(packageCursor + 256))
@@ -106,18 +138,23 @@ class Package {
                  packageCursor += Int(chunkHeader.size)
             } else if chunkHeader.type == .RES_TABLE_TYPE_TYPE {
                 var typeOffset = packageCursor
-                let type = try ResourceType(data: data, offset: &typeOffset, typeStringPool: typeStringPool, keyStringPool: keyStringPool, mainStringPool: mainStringPool)
-                types[type.name] = type
+                do {
+                    let type = try ResourceType(data: data, offset: &typeOffset, packageId: packageId, typeStringPool: typeStringPool, keyStringPool: keyStringPool, mainStringPool: mainStringPool)
+                    types[type.name] = type
+                } catch {
+                    // Ignore errors inside obfuscated types to salvage the rest of the file
+                }
                 packageCursor += Int(chunkHeader.size)
             } else {
-                // Unknown chunk, break
-                break
+                // Unknown chunk, skip it instead of breaking completely to support obfuscated ARSC
+                if chunkHeader.size == 0 { break } // Prevent infinite loop
+                packageCursor += Int(chunkHeader.size)
             }
         }
         offset = packageHeaderStart + Int(packageHeader.size)
     }
 
-    func getPublicResources(locale: String) -> String {
+    public func getPublicResources(locale: String) -> String {
         var xml = "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<resources>\n"
         for (_, type) in types {
             xml += type.getPublicResources(locale: locale)
@@ -127,11 +164,11 @@ class Package {
     }
 }
 
-class ResourceType {
-    let name: String
-    private var entries: [String: [ResourceValue]] = [:]
+public class ResourceType {
+    public let name: String
+    public var entries: [String: [ResourceValue]] = [:]
 
-    init(data: Data, offset: inout Int, typeStringPool: StringBlock, keyStringPool: StringBlock, mainStringPool: StringBlock?) throws {
+    init(data: Data, offset: inout Int, packageId: Int, typeStringPool: StringBlock, keyStringPool: StringBlock, mainStringPool: StringBlock?) throws {
         let typeChunkStart = offset
         var typeCursor = offset
         let typeChunkHeader = try ARSCParser.parseHeader(at: &typeCursor, data: data, expected: .RES_TABLE_TYPE_TYPE)
@@ -157,11 +194,13 @@ class ResourceType {
             typeCursor += 4
         }
         
-        for entryOffset in entryOffsets {
+        for (entryId, entryOffset) in entryOffsets.enumerated() {
             if entryOffset == 0xFFFFFFFF { continue }
 
             var valueOffset = typeChunkStart + entriesStart + entryOffset
-            let value = try ResourceValue(data: data, offset: &valueOffset, keyStringPool: keyStringPool, mainStringPool: mainStringPool)
+            let resId = (packageId << 24) | (typeId << 16) | entryId
+            
+            let value = try ResourceValue(data: data, offset: &valueOffset, calculatedResId: resId, keyStringPool: keyStringPool, mainStringPool: mainStringPool)
             if entries[locale] == nil {
                 entries[locale] = []
             }
@@ -170,7 +209,7 @@ class ResourceType {
         offset = typeChunkStart + Int(typeChunkHeader.size)
     }
 
-    func getPublicResources(locale: String) -> String {
+    public func getPublicResources(locale: String) -> String {
         var xml = ""
         guard let values = entries[locale] else { return "" }
         for value in values {
@@ -181,12 +220,12 @@ class ResourceType {
     }
 }
 
-struct ResourceValue {
-    let name: String
-    let resId: Int
-    let value: String
+public struct ResourceValue {
+    public let name: String
+    public let resId: Int
+    public let value: String
 
-    init(data: Data, offset: inout Int, keyStringPool: StringBlock, mainStringPool: StringBlock?) throws {
+    init(data: Data, offset: inout Int, calculatedResId: Int, keyStringPool: StringBlock, mainStringPool: StringBlock?) throws {
         _ = Int(data.withUnsafeBytes { $0.load(fromByteOffset: offset, as: UInt16.self).littleEndian })
         offset += 2
         _ = Int(data.withUnsafeBytes { $0.load(fromByteOffset: offset, as: UInt16.self).littleEndian })
@@ -202,7 +241,7 @@ struct ResourceValue {
         let valueData = Int(data.withUnsafeBytes { $0.load(fromByteOffset: offset, as: UInt32.self).littleEndian })
         offset += 4
 
-        self.resId = 0 // This needs to be calculated properly
+        self.resId = calculatedResId
         self.value = ARSCParser.formatValue(type: valueType, data: valueData, stringPool: mainStringPool)
     }
 }
