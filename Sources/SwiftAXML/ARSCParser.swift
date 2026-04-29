@@ -1,12 +1,12 @@
 
 import Foundation
 
-class ARSCParser {
+public class ARSCParser {
     private var data: Data
     private var mainStringPool: StringBlock?
-    private var packages: [String: Package] = [:]
+    public var packages: [String: Package] = [:]
 
-    init(data: Data) throws {
+    public init(data: Data) throws {
         self.data = data
         try parse()
     }
@@ -55,11 +55,12 @@ class ARSCParser {
     }
 }
 
-class Package {
-    let name: String
+public class Package {
+    public let name: String
+    public var id: Int = 0
     private var typeStringPool: StringBlock
     private var keyStringPool: StringBlock
-    private var types: [String: ResourceType] = [:]
+    public var types: [String: ResourceType] = [:]
 
     init(data: Data, offset: inout Int, mainStringPool: StringBlock?) throws {
         let packageHeaderStart = offset
@@ -67,7 +68,7 @@ class Package {
         let packageHeader = try ARSCParser.parseHeader(at: &packageCursor, data: data, expected: .RES_TABLE_PACKAGE_TYPE)
         packageCursor = packageHeaderStart + Int(packageHeader.headerSize)
         
-        _ = Int(data.withUnsafeBytes { $0.load(fromByteOffset: packageCursor, as: UInt32.self).littleEndian })
+        self.id = Int(data.withUnsafeBytes { $0.load(fromByteOffset: packageCursor, as: UInt32.self).littleEndian })
         packageCursor += 4
         
         let nameData = data.subdata(in: packageCursor..<(packageCursor + 256))
@@ -127,9 +128,10 @@ class Package {
     }
 }
 
-class ResourceType {
-    let name: String
-    private var entries: [String: [ResourceValue]] = [:]
+public class ResourceType {
+    public let name: String
+    public var id: Int = 0
+    public var entries: [String: [ResourceValue]] = [:]
 
     init(data: Data, offset: inout Int, typeStringPool: StringBlock, keyStringPool: StringBlock, mainStringPool: StringBlock?) throws {
         let typeChunkStart = offset
@@ -138,6 +140,7 @@ class ResourceType {
         typeCursor = typeChunkStart + Int(typeChunkHeader.headerSize)
         
         let typeId = Int(data.withUnsafeBytes { $0.load(fromByteOffset: typeCursor, as: UInt8.self) })
+        self.id = typeId
         self.name = typeStringPool.getString(at: typeId - 1) ?? ""
         typeCursor += 4
         
@@ -157,11 +160,11 @@ class ResourceType {
             typeCursor += 4
         }
         
-        for entryOffset in entryOffsets {
+        for (index, entryOffset) in entryOffsets.enumerated() {
             if entryOffset == 0xFFFFFFFF { continue }
 
             var valueOffset = typeChunkStart + entriesStart + entryOffset
-            let value = try ResourceValue(data: data, offset: &valueOffset, keyStringPool: keyStringPool, mainStringPool: mainStringPool)
+            let value = try ResourceValue(data: data, offset: &valueOffset, resId: index, keyStringPool: keyStringPool, mainStringPool: mainStringPool)
             if entries[locale] == nil {
                 entries[locale] = []
             }
@@ -181,12 +184,13 @@ class ResourceType {
     }
 }
 
-struct ResourceValue {
-    let name: String
+public struct ResourceValue {
+    public let name: String
+    public var id: Int = 0
     let resId: Int
     let value: String
 
-    init(data: Data, offset: inout Int, keyStringPool: StringBlock, mainStringPool: StringBlock?) throws {
+    init(data: Data, offset: inout Int, resId: Int, keyStringPool: StringBlock, mainStringPool: StringBlock?) throws {
         _ = Int(data.withUnsafeBytes { $0.load(fromByteOffset: offset, as: UInt16.self).littleEndian })
         offset += 2
         _ = Int(data.withUnsafeBytes { $0.load(fromByteOffset: offset, as: UInt16.self).littleEndian })
@@ -202,7 +206,7 @@ struct ResourceValue {
         let valueData = Int(data.withUnsafeBytes { $0.load(fromByteOffset: offset, as: UInt32.self).littleEndian })
         offset += 4
 
-        self.resId = 0 // This needs to be calculated properly
+        self.resId = resId
         self.value = ARSCParser.formatValue(type: valueType, data: valueData, stringPool: mainStringPool)
     }
 }
